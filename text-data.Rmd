@@ -1,0 +1,263 @@
+---
+title: "PLSC 497 HW3"
+author: "Emily TYger"
+date: "10/28/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+setwd("~/RStudio")
+
+library(caret)
+library(quanteda)
+library(dplyr)
+```
+
+Predict if the given email including the following words ("immigration", "voter", "aliens", "help", "economy", "minorities", "unemployment") was sent by either REP/DEM
+
+I created a .csv file of the given table to use the data with two columns: category(REP/DEM) and email(the text associated).I did not do any preprocessing because the text is all lowercase, without punctuation or stopwords. I renamed the columns "party" and "text" and the scale for the classes is {-1, 1}, -1 = DEM and 1 = REP. The prediction resulted in -1 so there is strong evidence a "DEM" sent the email. When I looked at the strongest features, neither parties use "minorities" or "unemployment" which is over 25% of the text in the predicted email. 
+
+```{r message=FALSE}
+email_data <- read.csv("emaildata.csv", header = TRUE)
+
+emaildf <- data.frame(email_data)
+emaildf <- emaildf %>% select(category, email) %>% setNames(c("party", "text"))
+
+# distribution
+prop.table(table(emaildf$party))
+
+# randomly sample a test speech
+set.seed(1969L)
+ids <- 1:nrow(emaildf)
+ids_test <- sample(ids, 1, replace = FALSE)
+ids_train <- ids[-ids_test]
+train_set <- emaildf[ids_train,]
+test_set <- emaildf[ids_test,]
+
+train_dfm <- dfm(as.character(train_set$text))
+test_dfm <- dfm(as.character(test_set$text))
+
+ws_base <- textmodel_wordscores(train_dfm, 
+                                y = (2 * as.numeric(train_set$party == "REP")) - 1 # Y variable must be coded on a binary x in {-1,1} scale, so -1 = DEM and 1 = REP
+)
+
+# Look at strongest features
+rep_features <- sort(ws_base$wordscores, decreasing = TRUE) 
+rep_features[1:10]
+
+dem_features <- sort(ws_base$wordscores, decreasing = FALSE)  
+dem_features[1:10]
+
+# Can also check the score for specific features
+ws_base$wordscores[c("immigration", "voter", "aliens", "help", "economy", "minorities", "unemployment")]
+
+# predict that last speech
+test_set$party
+predict(ws_base, newdata = test_dfm,
+        rescaling = "none", level = 0.95) 
+```
+
+The prediction below still points to DEM because the score is -0.4286 but the evidence is less strong.  The document attached "smoothingvis.png" shows that smoothing does not have a large effect on the result. 
+
+```{r message=FALSE}
+ws_sm <- textmodel_wordscores(train_dfm, 
+                              y = (2 * as.numeric(train_set$party == "REP")) - 1, # Y variable must be coded on a binary x in {-1,1} scale, so -1 = Conservative and 1 = Labour
+                              smooth = 1
+)
+
+# Look at strongest features
+rep_features_sm <- sort(ws_sm$wordscores, decreasing = TRUE)
+rep_features_sm[1:10]
+
+dem_features_sm <- sort(ws_sm$wordscores, decreasing = FALSE)
+dem_features_sm[1:10]
+
+# predict that last speech
+test_set$party
+predict(ws_sm, newdata = test_dfm,
+        rescaling = "none", level = 0.95) 
+
+ws_base$wordscores[c("immigration", "voter", "aliens", "help", "economy", "minorities", "unemployment")]
+
+# Smoothing  ---not as big a deal
+plot1b <- plot(ws_base$wordscores, ws_sm$wordscores, xlim=c(-1, 1), ylim=c(-1, 1),
+     xlab="Without Smoothing", ylab="Smooth")
+
+```
+
+Add labels the columns in the file "yelp_copy.csv" by the average rating of stars given in the review. Scores above average were rated as POS and below were rated as NEG. 
+
+```{r message=FALSE}
+yelp <- read.csv("yelp_copy.csv")
+yelpdf <- data.frame(yelp, stringsAsFactors = FALSE)
+
+mean(yelpdf$stars)
+# =3.778
+
+yelpdf <- within(yelpdf, {
+  label <- NA
+  label[stars > 3.778] <- "POS"
+  label[stars <= 3.778] <- "NEG"
+})
+```
+
+Find the distribution of labels in the data. 
+    
+```{r message=FALSE}
+yelpdf <- within(yelpdf, {
+  anchor <- NA
+  anchor[stars == 5] <- "positive"
+  anchor[stars <5 & stars >1] <- "neutral"
+  anchor[stars == 1] <- "negative"
+})
+
+pos <- count(yelpdf, name = "positive")
+ntl <- count(yelpdf, name = "neutral")
+neg <- count(yelpdf, name = "negative")
+
+prop.table(table(yelpdf$anchor))
+```
+
+First method for pos/neg is dictionary based.  Use dictionaries provided on GitHub (Hu Liu 2004)
+Generate a sentiment score for each review based on positive - negative words. Create a vector of dichotomous variables, equal length to number of reviews, in which texts tht have a positive sentiment score are labeled "positive" and negative scores are labeled "negtive"; 0 scores are positive.  Report the percentage of reviews in each category and discuss the results.
+
+```{r message=FALSE}
+
+library(caret)
+library(quanteda)
+
+# create document feature matrix
+yelp_dfm <- dfm(as.character(yelpdf$text), stem = TRUE, remove_punct = TRUE, remove = stopwords("english")) %>% convert("matrix")
+
+# A. the caret package has it's own partitioning function
+set.seed(1984)
+ids_train_yelp <- createDataPartition(1:nrow(yelp_dfm), p = 0.8, list = FALSE, times = 1)
+train_x_yelp <- yelp_dfm[ids_train_yelp, ] %>% as.data.frame() # train set data
+train_y_yelp <- yelpdf$label[ids_train_yelp] %>% as.factor()  # train set labels
+test_x_yelp <- yelp_dfm[-ids_train_yelp, ]  %>% as.data.frame() # test set data
+test_y_yelp <- yelpdf$label[-ids_train_yelp] %>% as.factor() # test set labels
+
+# baseline
+baseline_acc_yelp <- max(prop.table(table(test_y_yelp)))
+
+# B. define training options (we've done this manually above)
+trctrl_yelp <- trainControl(method = "LOOCV", p = 0.8)
+
+# C. train model (caret gives us access to even more options)
+# see: https://topepo.github.io/caret/available-models.html
+
+# svm - linear
+svm_mod_linear <- train(x = train_x_yelp,
+                        y = train_y_yelp,
+                        method = "svmLinear",
+                        trControl = trctrl)
+
+svm_linear_pred <- predict(svm_mod_linear, newdata = test_x_yelp)
+svm_linear_cmat <- confusionMatrix(svm_linear_pred, test_y_yelp)
+```
+
+Create a histogram to visualize the distribution of the continuous sentiment measure. Your answer should be a graph.
+
+```{r message=FALSE}
+# need 3a done
+library(ggplot2)
+hist3b <- ggplot(yelpdf, aes(x = sentScore)) + geom_histogram() + labs(title = "Distribution of Sentiment Measures")
+View(hist3b)
+```
+
+Evaluate the performance of the model at identifying pos/neg reviews by creating a confusion matrix with the pos/neg values assigned by the sentiment score above on the vertical axis and the binary "true" classifications from above on the horizontal axis.  Use this confusion matrix to compute the accuracy, precision, reall, and F1 score of the sentiment classifier.  
+
+```{r message=FALSE}
+cmat_sm_yelp <- table(yelpdf$label, sentScore)
+nb_acc_sm_yelp <- sum(diag(cmat_sm_yelp))/sum(cmat_sm_yelp) # accuracy = (TP + TN) / (TP + FP + TN + FN)
+nb_recall_sm_yelp <- cmat_sm_yelp[2,2]/sum(cmat_sm_yelp[2,]) # recall = TP / (TP + FN)
+nb_precision_sm_yelp <- cmat_sm_yelp[2,2]/sum(cmat_sm_yelp[,2]) # precision = TP / (TP + FP)
+nb_f1_sm_yelp <- 2*(nb_recall_sm_yelp*nb_precision_sm_yelp)/(nb_recall_sm_yelp + nb_precision_sm_yelp)
+```
+
+
+Second Model with smooth=1
+
+```{r message=FALSE}
+nb_model_sm_B <- textmodel_nb(train_dfm_yelp4, train_x_yelp$label, smooth = 1, prior = "docfreq")
+
+# evaluate on test set
+predicted_class_sm_B <- predict(nb_model_sm_B, newdata = test_dfm_yelp4)
+
+# get confusion matrix
+cmat_sm_B <- table(test_x_yelp$label, predicted_class_sm_B)
+nb_acc_sm_B <- sum(diag(cmat_sm_B))/sum(cmat_sm_B) # accuracy = (TP + TN) / (TP + FP + TN + FN)
+nb_recall_sm_B <- cmat_sm_B[2,2]/sum(cmat_sm_B[2,]) # recall = TP / (TP + FN)
+nb_precision_sm_B <- cmat_sm_B[2,2]/sum(cmat_sm_B[,2]) # precision = TP / (TP + FP)
+nb_f1_sm_B <- 2*(nb_recall_sm_B*nb_precision_sm_B)/(nb_recall_sm_B + nb_precision_sm_B)
+
+# print
+cat(
+  "Baseline Accuracy: ", baseline_acc, "\n",
+  "Accuracy:",  nb_acc_sm_B, "\n",
+  "Recall:",  nb_recall_sm_B, "\n",
+  "Precision:",  nb_precision_sm_B, "\n",
+  "F1-score:", nb_f1_sm_B
+)
+```
+
+Third model with smooth = 0 
+
+```{r message=FALSE}
+nb_model_yelp <- textmodel_nb(train_dfm_yelp4, train_x_yelp$label, smooth = 0, prior = "uniform")
+
+# evaluate on test set
+predicted_class_yelp <- predict(nb_model_yelp, newdata = test_dfm_yelp4)
+
+# baseline --- This is important, to see how much our model beats a model that just picks the modal class 
+baseline_acc_yelp4c <- max(prop.table(table(test_x_yelp$label)))
+
+# get confusion matrix
+cmat_yelp <- table(test_x_yelp$label, predicted_class_yelp)
+nb_acc_yelp <- sum(diag(cmat_yelp))/sum(cmat_yelp) # accuracy = (TP + TN) / (TP + FP + TN + FN)
+nb_recall_yelp <- cmat_yelp[2,2]/sum(cmat_yelp[2,]) # recall = TP / (TP + FN)
+nb_precision_yelp <- cmat_yelp[2,2]/sum(cmat_yelp[,2]) # precision = TP / (TP + FP)
+nb_f1_yelp <- 2*(nb_recall_yelp*nb_precision_yelp)/(nb_recall_yelp + nb_precision_yelp)
+
+# print
+cat(
+  "Baseline Accuracy: ", baseline_acc_yelp4c, "\n",
+  "Accuracy:",  nb_acc_yelp, "\n",
+  "Recall:",  nb_recall_yelp, "\n",
+  "Precision:",  nb_precision_yelp, "\n",
+  "F1-score:", nb_f1_yelp
+)
+```
+
+Subset the data into training and test sets 
+
+```{r message=FALSE}
+set.seed(1984)
+ids_train <- createDataPartition(1:nrow(yelp_dfm), p = 0.8, list = FALSE, times = 1)
+train_x <- yelp_dfm[ids_train, ] %>% as.data.frame() # train set data
+train_y <- yelpdf$label[ids_train] %>% as.factor()  # train set labels
+test_x <- yelp_dfm[-ids_train, ]  %>% as.data.frame() # test set data
+test_y <- yelpdf$label[-ids_train] %>% as.factor() # test set labels
+```
+
+Confusion matrix:
+    NEG POS class.error
+NEG  30 101  0.77099237
+POS  22 247  0.08178439
+
+```{r message=FALSE}
+library(randomForest)
+mtry = sqrt(ncol(train_x)) 
+ntree = 51  
+set.seed(1984)
+rf.base <- randomForest(x = train_x, y = train_y, ntree = ntree, mtry = mtry)
+token_importance <- round(importance(rf.base, 2), 2)
+head(rownames(token_importance)[order(-token_importance)])
+
+# print results
+print(rf.base)
+
+plot5b <- varImpPlot(rf.base, n.var = 10, main = "Variable Importance")
+```
