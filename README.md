@@ -1,4 +1,5 @@
 # text-as-data
+Use supervised learning techniques to classify data in the form of text.
 
 ## Introduction
 The first part of this file is a simple example of using supervised learning to classify a new observation from previously labeled data in the emaildata.csv. This example is done twice, with and without smoothing. 
